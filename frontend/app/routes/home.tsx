@@ -2,14 +2,13 @@ import type { Route } from "./+types/home";
 import { useState, useEffect } from "react";
 import { Send, Plus, Clock, LogOut } from "lucide-react";
 import { FaGithub } from "react-icons/fa";
-import { Button } from "~/components/ui/button";
 import { Separator } from "~/components/ui/separator";
 import { supabase, type Chat, type Message } from "~/lib/supabase-simple";
 import { useAuth } from "~/lib/supabase-auth";
 
 export function meta({}: Route.MetaArgs) {
   return [
-    { title: "TinyGen - AI Assistant" },
+    { title: "Tinygen - AI Assistant" },
     { name: "description", content: "Your personal AI assistant" },
   ];
 }
@@ -18,7 +17,7 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [githubUrl, setGithubUrl] = useState("");
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-  const [currentChat, setCurrentChat] = useState<Chat | null>(null);
+  const [, setCurrentChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [recentChats, setRecentChats] = useState<Chat[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -180,25 +179,30 @@ export default function Home() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-white">Loading...</div>
+      <div className="min-h-screen bg-gradient-to-br from-black via-gray-950 to-black flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-4"></div>
+          <div className="text-white/70">Loading...</div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen relative overflow-hidden bg-black">
-      {/* Much darker background with subtle gradient hints */}
+    <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-black via-gray-950 to-black">
+      {/* Subtle cold gradient background - spread to corners */}
       <div className="absolute inset-0">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-purple-900/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-blue-900/10 rounded-full blur-3xl" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-indigo-900/5 rounded-full blur-3xl" />
+        <div className="absolute -top-24 -left-24 w-[600px] h-[600px] bg-purple-600/10 rounded-full blur-[100px]" />
+        <div className="absolute -bottom-24 -right-24 w-[600px] h-[600px] bg-blue-600/10 rounded-full blur-[100px]" />
+        <div className="absolute top-1/3 left-1/3 w-[400px] h-[400px] bg-indigo-600/8 rounded-full blur-[80px]" />
+        <div className="absolute -top-24 -right-24 w-[500px] h-[500px] bg-cyan-600/8 rounded-full blur-[100px]" />
+        <div className="absolute -bottom-24 -left-24 w-[500px] h-[500px] bg-violet-600/8 rounded-full blur-[100px]" />
       </div>
 
       {/* Sidebar - Only show when signed in */}
       {user && (
         <div 
-          className={`absolute left-0 top-0 h-full bg-black/40 backdrop-blur-xl border-r border-white/10 z-50 transition-all duration-300 ${
+          className={`fixed left-0 top-0 h-full bg-black/50 backdrop-blur-xl border-r border-white/10 z-50 transition-all duration-300 ${
             sidebarHovered ? 'w-64' : 'w-16'
           }`}
           onMouseEnter={() => setSidebarHovered(true)}
@@ -207,10 +211,14 @@ export default function Home() {
           <div className="flex flex-col h-full">
             {/* Logo/Brand - Fixed height */}
             <div className="flex items-center px-4 py-6 border-b border-white/10 h-20">
-              <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-blue-500 rounded-lg flex-shrink-0" />
-              <span className={`ml-3 text-white font-semibold transition-opacity duration-300 ${
-                sidebarHovered ? 'opacity-100 delay-100' : 'opacity-0'
-              }`}>TinyGen</span>
+              <img 
+                src="/Codegen_logo_white.svg" 
+                alt="Tinygen" 
+                className="h-8 w-8 object-contain flex-shrink-0"
+              />
+              <span className={`ml-3 text-white font-semibold text-lg transition-opacity duration-300 ${
+                sidebarHovered ? 'opacity-100' : 'opacity-0'
+              }`}>Tinygen</span>
             </div>
 
             {/* Navigation Items */}
@@ -245,15 +253,15 @@ export default function Home() {
                     {user.user_metadata?.user_name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase() || 'U'}
                   </span>
                 </div>
-                <div className={`ml-3 flex-1 transition-all duration-300 ${
-                  sidebarHovered ? 'opacity-100 w-auto' : 'opacity-0 w-0'
+                <div className={`ml-3 flex-1 overflow-hidden transition-opacity duration-300 ${
+                  sidebarHovered ? 'opacity-100' : 'opacity-0'
                 }`}>
                   <p className="text-white text-sm font-medium truncate">
                     {user.user_metadata?.user_name || user.email?.split('@')[0] || 'User'}
                   </p>
                   <button 
                     onClick={signOut}
-                    className="text-white/60 text-xs hover:text-white transition-colors flex items-center gap-1"
+                    className="text-white/60 text-xs hover:text-white transition-colors flex items-center gap-1 whitespace-nowrap"
                   >
                     <LogOut className="w-3 h-3" />
                     Sign out
@@ -265,20 +273,31 @@ export default function Home() {
         </div>
       )}
 
+      {/* Logo for sign-in page */}
+      {!user && (
+        <div className="absolute top-8 left-8 z-50">
+          <img 
+            src="/Codegen_logo_white.svg" 
+            alt="Tinygen Logo" 
+            className="h-10 md:h-12 w-auto"
+          />
+        </div>
+      )}
+
       {/* Main Content - Adjusted margin when signed in */}
-      <div className={`relative z-10 min-h-screen flex items-center justify-center ${user ? 'ml-16' : ''}`}>
+      <div className={`relative z-10 min-h-screen flex items-center justify-center px-4 ${user ? 'ml-16' : ''}`}>
         {/* Not signed in */}
         {!user ? (
-          <div className="text-center">
-            <h1 className="text-5xl font-bold text-white mb-4">Welcome to TinyGen</h1>
-            <p className="text-white/60 mb-8">Your AI-powered coding assistant</p>
-            <Button
+          <div className="text-center max-w-2xl mx-auto">
+            <h1 className="text-4xl md:text-6xl font-bold text-white mb-4 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">Welcome to Tinygen</h1>
+            <p className="text-white/70 mb-8 text-lg md:text-xl">Your AI-powered coding assistant</p>
+            <button
               onClick={signInWithGitHub}
-              className="bg-white/10 hover:bg-white/20 text-white border border-white/20 backdrop-blur-sm px-6 py-3"
+              className="group relative bg-gradient-to-r from-blue-600/20 to-purple-600/20 hover:from-blue-600/30 hover:to-purple-600/30 text-white border border-white/20 backdrop-blur-sm px-8 py-4 rounded-xl transition-all duration-300 cursor-pointer hover:scale-105 hover:border-white/40 flex items-center gap-3 mx-auto font-medium"
             >
-              <FaGithub className="w-5 h-5 mr-2" />
+              <FaGithub className="w-6 h-6 group-hover:rotate-12 transition-transform duration-300" />
               Sign in with GitHub
-            </Button>
+            </button>
           </div>
         ) : (
           // Signed in - Show chat interface or recent tasks
@@ -359,7 +378,7 @@ export default function Home() {
                   {!currentChatId && (
                     <div className="w-full mb-6 animate-fade-in">
                       <div className="relative group">
-                        <FaGithub className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/40" />
+                        <FaGithub className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/40 z-10" />
                         <input
                           type="url"
                           value={githubUrl}
