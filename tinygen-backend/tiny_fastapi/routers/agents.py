@@ -182,3 +182,86 @@ async def run_claude_agent(request: RunClaudeAgentRequest):
         )
 
 
+class RunFollowupAgentRequest(BaseModel):
+    chat_id: str
+    prompt: str
+
+class RunFollowupAgentResponse(BaseModel):
+    status: str
+    error: Optional[str] = None
+
+@router.post("/run-followup-agent", response_model=RunFollowupAgentResponse)
+async def run_followup_agent(request: RunFollowupAgentRequest):
+    """
+    Run a follow-up Claude agent on an existing chat.
+    This will restore from the previous snapshot, apply the new prompt, 
+    and update the existing PR.
+    """
+    try:
+        # First, get the chat details from Supabase to retrieve the snapshot_id
+        if not supabase:
+            return RunFollowupAgentResponse(
+                status="error",
+                error="Supabase client not initialized"
+            )
+        
+        # Get chat details including snapshot_id, repo_url, etc.
+        chat_result = supabase.table('chats').select('*').eq('id', request.chat_id).single().execute()
+        
+        if not chat_result.data:
+            return RunFollowupAgentResponse(
+                status="error",
+                error="Chat not found"
+            )
+        
+        chat_data = chat_result.data
+        
+        # Check if we have required data
+        if not chat_data.get('snapshot_id'):
+            return RunFollowupAgentResponse(
+                status="error",
+                error="No snapshot found for this chat. Please create an initial PR first."
+            )
+        
+        if not chat_data.get('github_repo_url'):
+            return RunFollowupAgentResponse(
+                status="error",
+                error="No repository URL found for this chat"
+            )
+        
+        # Get user details
+        user_result = supabase.table('profiles').select('github_username').eq('id', chat_data['user_id']).single().execute()
+        
+        if not user_result.data or not user_result.data.get('github_username'):
+            return RunFollowupAgentResponse(
+                status="error",
+                error="GitHub username not found for user"
+            )
+        
+        # Get the Modal function
+        run_followup_func = Function.from_name("tinygen-functions", "run_followup_agent")
+        
+        # Call it asynchronously with all required data
+        call = run_followup_func.spawn(
+            chat_id=request.chat_id,
+            prompt=request.prompt,
+            snapshot_id=chat_data['snapshot_id'],
+            repo_url=chat_data['github_repo_url'],
+            branch_name=chat_data.get('branch_name'),
+            pr_url=chat_data.get('pr_url'),
+            user_github_username=user_result.data['github_username']
+        )
+        
+        # Return immediately
+        return RunFollowupAgentResponse(
+            status="started",
+            error=None
+        )
+        
+    except Exception as e:
+        return RunFollowupAgentResponse(
+            status="error",
+            error=str(e)
+        )
+
+

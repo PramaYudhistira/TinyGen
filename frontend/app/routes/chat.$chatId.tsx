@@ -27,6 +27,7 @@ export default function ChatPage({ params }: Route.ComponentProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<any>(null);
   const hasCalledEndpoint = useRef(false);
+  const setupTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Handle initial navigation from home page
   useEffect(() => {
@@ -103,6 +104,15 @@ export default function ChatPage({ params }: Route.ComponentProps) {
           const newMessage = payload.new as Message;
           // Only add if it's not from the current user (to avoid duplicates)
           if (newMessage.role === 'assistant') {
+            // Clear environment setup loading when first assistant message arrives
+            setIsSettingUpEnvironment(false);
+            
+            // Clear the timeout if it exists
+            if (setupTimeoutRef.current) {
+              clearTimeout(setupTimeoutRef.current);
+              setupTimeoutRef.current = null;
+            }
+            
             setMessages(prev => {
               // Check if message already exists to avoid duplicates
               const exists = prev.some(msg => msg.id === newMessage.id);
@@ -131,6 +141,10 @@ export default function ChatPage({ params }: Route.ComponentProps) {
         console.log('Cleaning up subscription');
         supabase.removeChannel(channelRef.current);
         channelRef.current = null;
+      }
+      if (setupTimeoutRef.current) {
+        clearTimeout(setupTimeoutRef.current);
+        setupTimeoutRef.current = null;
       }
     };
   }, [chatId]); // Remove user from dependencies to prevent reconnections
@@ -171,6 +185,18 @@ export default function ChatPage({ params }: Route.ComponentProps) {
   const callClaudeAgent = async (chat: Chat, prompt: string) => {
     if (!chat.github_repo_url) return;
 
+    // Clear any existing timeout
+    if (setupTimeoutRef.current) {
+      clearTimeout(setupTimeoutRef.current);
+    }
+
+    // Set a timeout to clear the loading state after 60 seconds
+    setupTimeoutRef.current = setTimeout(() => {
+      setIsSettingUpEnvironment(false);
+      console.log('Environment setup timeout - clearing loading state');
+      setupTimeoutRef.current = null;
+    }, 15000); // 60 seconds timeout
+
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
       
@@ -198,9 +224,13 @@ export default function ChatPage({ params }: Route.ComponentProps) {
       
       if (result.status === 'started') {
         console.log('Claude agent started successfully');
-        // The messages will come through realtime subscription
-        setIsSettingUpEnvironment(false);
+        // Don't clear the loading state here - wait for first message
+        // The timeout will handle it if no messages arrive
       } else {
+        if (setupTimeoutRef.current) {
+          clearTimeout(setupTimeoutRef.current);
+          setupTimeoutRef.current = null;
+        }
         setIsSettingUpEnvironment(false);
         console.error('Failed to start Claude agent:', result.error);
         // Add error message
@@ -220,6 +250,10 @@ export default function ChatPage({ params }: Route.ComponentProps) {
         }
       }
     } catch (error) {
+      if (setupTimeoutRef.current) {
+        clearTimeout(setupTimeoutRef.current);
+        setupTimeoutRef.current = null;
+      }
       console.error('Error calling Claude agent:', error);
       setIsSettingUpEnvironment(false);
       // Add error message
@@ -315,7 +349,13 @@ export default function ChatPage({ params }: Route.ComponentProps) {
         <div className="flex-1 flex items-center justify-center">
           <div className="w-full max-w-3xl h-full flex flex-col p-4">
             {/* Messages Area - takes up available space */}
-            <div className="flex-1 overflow-y-auto">
+            <div 
+              className="flex-1 overflow-y-auto"
+              style={{
+                scrollbarWidth: 'thin',
+                scrollbarColor: 'rgba(255, 255, 255, 0.2) transparent',
+              }}
+            >
               {isLoadingMessages ? (
                 <div className="flex flex-col items-center justify-center h-full">
                   <div className="relative">

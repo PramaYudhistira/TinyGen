@@ -63,299 +63,6 @@ def parse_github_url(repo_url: str) -> tuple[str, str]:
     else:
         raise ValueError(f"Invalid GitHub URL format: {repo_url}")
 
-@app.function(
-    image=sandbox_image,
-    secrets=[Secret.from_name("all-tinygen")],
-    timeout=600
-)
-def debug_claude_simple(repo_url: str) -> Dict:
-    """Debug function - just clone a repo and run Claude with a simple prompt"""
-    from supabase import create_client
-    from prompts import INITIAL_SYSTEM_PROMPT
-    
-    # Parse repo URL to get owner and repo
-    owner, repo_name = parse_github_url(repo_url)
-    print(f"Debug: Cloning {owner}/{repo_name}")
-    
-    # Create sandbox
-    sandbox = Sandbox.create(
-        image=sandbox_base_image,
-        secrets=[Secret.from_name("all-tinygen")],
-        timeout=600
-    )
-    
-    try:
-        # Clone with basic auth (public repo)
-        print("Cloning repository...")
-        clone_process = sandbox.exec(
-            "git", "clone", f"https://github.com/{owner}/{repo_name}.git", "/tmp/repo"
-        )
-        clone_process.wait()
-        
-        if clone_process.returncode != 0:
-            return {"error": f"Clone failed: {clone_process.stderr.read()}"}
-        
-        print("Repository cloned successfully")
-        
-        # Create a simple Claude script
-        test_prompt = "create a simple hello world python script"
-        chat_id = "debug-test"
-        
-        claude_code = f'''
-import asyncio
-import json
-from claude_code_sdk import query, ClaudeCodeOptions
-from claude_code_sdk import AssistantMessage, TextBlock, ToolUseBlock
-
-async def main():
-    print("Starting claude-code assistant...", flush=True)
-    
-    options = ClaudeCodeOptions(
-        model="claude-sonnet-4-20250514",
-        cwd="/tmp/repo",
-        permission_mode="acceptEdits",
-        system_prompt={json.dumps(INITIAL_SYSTEM_PROMPT)},
-        max_turns=50,
-        allowed_tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"]
-    )
-    
-    async for message in query(prompt="{test_prompt}", options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock) and block.text.strip():
-                    print(f"CLAUDE: {{block.text}}", flush=True)
-                elif isinstance(block, ToolUseBlock):
-                    print(f"TOOL USE: {{block.name}} - {{block.id}}", flush=True)
-    
-    print("✅ Task completed!", flush=True)
-
-asyncio.run(main())
-'''
-        
-        # Write and run the script
-        print("Writing claude script...")
-        write_script = sandbox.exec(
-            "sh", "-c", f"cat > /tmp/claude_runner.py << 'EOF'\n{claude_code}\nEOF"
-        )
-        write_script.wait()
-        
-        # Test claude CLI first
-        print("Testing claude CLI...")
-        test_claude = sandbox.exec("claude", "--version")
-        test_claude.wait()
-        if test_claude.returncode == 0:
-            print(f"Claude CLI version: {test_claude.stdout.read().strip()}")
-        else:
-            print(f"Claude CLI test failed: {test_claude.stderr.read()}")
-        
-        print("Running Claude script...")
-        claude_process = sandbox.exec("python", "-u", "/tmp/claude_runner.py")
-        
-        # Capture all output
-        output = []
-        for line in claude_process.stdout:
-            print(f"[OUTPUT] {line.strip()}")
-            output.append(line.strip())
-        
-        claude_process.wait()
-        
-        if claude_process.returncode != 0:
-            stderr = claude_process.stderr.read()
-            print(f"Claude failed with exit code {claude_process.returncode}")
-            print(f"Stderr: {stderr}")
-            return {"error": f"Claude failed: {stderr}", "output": output}
-        
-        # Check if any files were created
-        print("Checking for created files...")
-        ls_process = sandbox.exec("ls", "-la", "/tmp/repo")
-        ls_process.wait()
-        print("Files in repo:")
-        for line in ls_process.stdout:
-            print(f"  {line.strip()}")
-        
-        return {"success": True, "output": output}
-        
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        return {"error": str(e)}
-    finally:
-        sandbox.terminate()
-
-
-@app.function(
-    image=sandbox_image,
-    secrets=[Secret.from_name("all-tinygen")],
-    timeout=600  # 10 minutes timeout for cloning large repos
-)
-def fork_and_clone_repo(repo_url: str, user_github_username: str, chat_id: str) -> Dict:
-    """
-    Fork a GitHub repo (if not already forked) and clone it into a sandbox.
-    Returns the sandbox snapshot ID.
-    """
-    # Import the github_auth module inside the function (it's in /root/)
-
-    #i dont think we need this?:
-    # import sys i 
-    # sys.path.append('/root')
-    from github_auth import (
-        generate_jwt_token,
-        get_installation_id,
-        get_installation_access_token,
-        authenticate_gh_cli,
-        setup_git_config,
-        check_repo_access
-    )
-    
-    # Get GitHub App credentials from secrets
-    client_id = os.environ["GITHUB_CLIENT_ID"]
-    private_key = os.environ["GITHUB_PRIVATE_KEY"]
-    
-    # Parse repo URL
-    owner, repo_name = parse_github_url(repo_url)
-    
-    # Generate JWT token
-    jwt_token = generate_jwt_token(client_id, private_key)
-    
-    # Get installation ID for the USER, not the repo
-    # This lets us work with any repo the user has access to
-    installation_id, error = get_installation_id(user_github_username, repo_name, jwt_token)
-    if error:
-        # Try getting installation for the repo owner as fallback
-        installation_id, error = get_installation_id(owner, repo_name, jwt_token)
-        if error:
-            return {
-                "status": "error",
-                "error": error
-            }
-    
-    # Get access token for this installation
-    access_token = get_installation_access_token(installation_id, jwt_token)
-    
-    # Create sandbox
-    sandbox = Sandbox.create(
-        image=sandbox_base_image,  # Use base image, we're creating from scratch
-        timeout=600
-    )
-    
-    try:
-        # Authenticate gh CLI in sandbox
-        authenticate_gh_cli(sandbox, access_token)
-        
-        # Set up git config
-        setup_git_config(sandbox)
-        
-        # Check if user has direct access to the repo
-        has_access = check_repo_access(sandbox, owner, repo_name, user_github_username)
-        
-        if has_access:
-            # User has write access, clone directly without forking
-            print(f"User has write access to {owner}/{repo_name}, cloning directly...")
-            clone_url = f"https://github.com/{owner}/{repo_name}.git"
-            final_repo = f"{owner}/{repo_name}"
-        else:
-            # User doesn't have write access, need to fork
-            print(f"User doesn't have write access, checking for existing fork...")
-            
-            # Check if fork already exists
-            check_fork = sandbox.exec(
-                "gh", "repo", "view", f"{user_github_username}/{repo_name}",
-                "--json", "name"
-            )
-            check_fork.wait()
-            
-            fork_exists = check_fork.returncode == 0
-            
-            if not fork_exists:
-                print(f"Fork doesn't exist, creating fork of {owner}/{repo_name}...")
-                fork_process = sandbox.exec(
-                    "gh", "repo", "fork", f"{owner}/{repo_name}", 
-                    "--clone=false"
-                )
-                fork_process.wait()
-                
-                if fork_process.returncode != 0:
-                    raise Exception(f"Failed to fork repo: {fork_process.stderr.read()}")
-                
-                print("Fork created successfully")
-                # Wait for fork to be available on GitHub
-                print("Waiting for fork to be available...")
-                time.sleep(3)  # Give GitHub 3 seconds to make the fork available
-            else:
-                print("Fork already exists")
-            
-            clone_url = f"https://github.com/{user_github_username}/{repo_name}.git"
-            final_repo = f"{user_github_username}/{repo_name}"
-        
-        # Clone the repo with retries
-        print(f"Cloning {final_repo}...")
-        max_retries = 3
-        retry_delay = 2
-        
-        #github is pretty slow to check if fork exists...
-        for attempt in range(max_retries):
-            clone_process = sandbox.exec(
-                "git", "clone", clone_url, "/tmp/repo"
-            )
-            clone_process.wait()
-            
-            if clone_process.returncode == 0:
-                break
-            elif attempt < max_retries - 1:
-                error_msg = clone_process.stderr.read()
-                print(f"Clone attempt {attempt + 1} failed: {error_msg}")
-                if "503" in error_msg or "Service unavailable" in error_msg:
-                    print(f"GitHub service unavailable, retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    raise Exception(f"Failed to clone repo: {error_msg}")
-            else:
-                raise Exception(f"Failed to clone repo after {max_retries} attempts: {clone_process.stderr.read()}")
-        
-        print(f"Repository {final_repo} cloned successfully")
-        
-        # Create a snapshot of the sandbox
-        print("Creating sandbox snapshot...")
-        snapshot = sandbox.snapshot_filesystem()
-        snapshot_id = snapshot.object_id
-        print(f"Snapshot created with ID: {snapshot_id}")
-        
-        # Update the database with the snapshot ID
-        from supabase import create_client
-        supabase_url = os.environ["SUPABASE_URL"]
-        supabase_key = os.environ["SUPABASE_ANON_KEY"]
-        supabase = create_client(supabase_url, supabase_key)
-        
-        # Update the chat with the snapshot ID and the actual repo we're working with
-        # If we forked, store the fork URL. If not, store the original
-        working_repo_url = f"https://github.com/{final_repo}"
-        
-        update_data = {
-            'snapshot_id': snapshot_id,
-            'github_repo_url': working_repo_url  # Always store the actual repo we're working with (fork or original)
-        }
-        
-        supabase.table('chats').update(update_data).eq('id', chat_id).execute()
-        
-        print(f"Updated chat {chat_id} with snapshot {snapshot_id} and repo {working_repo_url}")
-        
-        return {
-            "status": "success",
-            "snapshot_id": snapshot_id,
-            "clone_url": f"https://github.com/{final_repo}",
-            "original_repo": f"{owner}/{repo_name}",
-            "forked": not has_access
-        }
-        
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        return {
-            "status": "error",
-            "error": str(e)
-        }
-    finally:
-        sandbox.terminate()
-
 
 @app.function(
     image=sandbox_image,
@@ -378,7 +85,7 @@ def run_claude_agent(repo_url: str, user_github_username: str, chat_id: str, pro
     from supabase import create_client
     import json
     import tempfile
-    from prompts import INITIAL_SYSTEM_PROMPT
+    from prompts import INITIAL_SYSTEM_PROMPT, REFLECTION_SYSTEM_PROMPT
     
     # Initialize Supabase client with service role key to bypass RLS
     # This is needed because we're inserting messages on behalf of the user
@@ -802,6 +509,200 @@ asyncio.run(main())
                     'is_tool_use': False,
                     'metadata': {
                         'is_diff': True
+                    }
+                }).execute()
+            
+            # Run reflection Claude to review changes before committing
+            print("Running reflection review...")
+            supabase.table('messages').insert({
+                'chat_id': chat_id,
+                'content': "🔍 **Reviewing changes before creating PR...**\n\nRunning a final review to ensure code quality and completeness.",
+                'role': 'assistant',
+                'is_tool_use': False,
+                'metadata': {}
+            }).execute()
+            
+            # Create reflection Claude script
+            reflection_prompt = f"Review the changes that were just made. The original request was: '{prompt}'. Check if the implementation is correct, complete, and follows best practices. Fix any issues you find."
+            
+            reflection_code = f'''
+import sys
+import os
+import asyncio
+import json
+from datetime import datetime, timezone
+
+# Change to the repo directory BEFORE importing Claude SDK
+os.chdir("/tmp/repo")
+
+from claude_code_sdk import query, ClaudeCodeOptions, Message
+from claude_code_sdk import AssistantMessage, UserMessage, TextBlock, ToolUseBlock
+
+CHAT_ID = "{chat_id}"
+
+def format_message_for_display(message):
+    """Convert claude-code-sdk messages to human-readable format"""
+    if isinstance(message, AssistantMessage):
+        outputs = []
+        
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                if block.text.strip():
+                    outputs.append(block.text)
+            elif isinstance(block, ToolUseBlock):
+                tool_name = block.name
+                tool_input = block.input
+                
+                # Create structured tool use data
+                tool_data = {{
+                    "type": "tool_use",
+                    "tool_name": tool_name,
+                    "tool_id": block.id,
+                    "status": "calling",
+                    "input": {{}}
+                }}
+                
+                # Add formatted description and key parameters based on tool type
+                if tool_name == "Read":
+                    tool_data["description"] = "Read file"
+                    tool_data["icon"] = "📖"
+                    if "file_path" in tool_input:
+                        tool_data["summary"] = tool_input["file_path"]
+                        
+                elif tool_name == "Write":
+                    tool_data["description"] = "Wrote file"
+                    tool_data["icon"] = "✏️"
+                    if "file_path" in tool_input:
+                        tool_data["summary"] = tool_input["file_path"]
+                        
+                elif tool_name == "Edit":
+                    tool_data["description"] = "Edited file"
+                    tool_data["icon"] = "📝"
+                    if "file_path" in tool_input:
+                        tool_data["summary"] = tool_input["file_path"]
+                        
+                elif tool_name == "Bash":
+                    tool_data["description"] = "Ran command"
+                    tool_data["icon"] = "💻"
+                    if "command" in tool_input:
+                        tool_data["summary"] = tool_input["command"]
+                        
+                else:
+                    tool_data["description"] = "Using " + tool_name
+                    tool_data["icon"] = "🔧"
+                    tool_data["summary"] = tool_name
+                
+                # Send as JSON string with special marker
+                outputs.append("TOOL_USE_JSON:" + json.dumps(tool_data, ensure_ascii=False))
+        
+        return outputs
+    
+    return []
+
+async def main():
+    try:
+        options = ClaudeCodeOptions(
+            model="claude-sonnet-4-20250514",
+            cwd=".",  # Use current directory since we already chdir'd
+            permission_mode="acceptEdits",
+            system_prompt={json.dumps(REFLECTION_SYSTEM_PROMPT)},
+            max_turns=20,
+            allowed_tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"]
+        )
+        
+        # Query with the reflection prompt
+        async for message in query(prompt="{reflection_prompt}", options=options):
+            # Format and print ONLY the actual messages
+            display_messages = format_message_for_display(message)
+            
+            for msg in display_messages:
+                print("CHAT_MESSAGE:" + CHAT_ID + ":🔍 REVIEW: " + msg, flush=True)
+                sys.stdout.flush()  # Force flush to ensure parent process sees it
+        
+    except Exception as e:
+        # Don't print errors - they'll just pollute the output
+        pass
+
+asyncio.run(main())
+'''
+            
+            # Write the reflection script
+            print("Writing reflection script...")
+            write_reflection = sandbox.exec(
+                "sh", "-c", f"cat > /tmp/reflection_runner.py << 'EOF'\\n{reflection_code}\\nEOF"
+            )
+            write_reflection.wait()
+            
+            # Run reflection Claude
+            print("Running reflection Claude...")
+            reflection_process = sandbox.exec(
+                "python", "-u", "/tmp/reflection_runner.py"
+            )
+            
+            # Stream reflection output
+            for line in reflection_process.stdout:
+                line = line.strip()
+                
+                if line.startswith("CHAT_MESSAGE:") and ":" in line[13:]:
+                    parts = line.split(":", 2)
+                    if len(parts) >= 3:
+                        message_content = parts[2]
+                        
+                        # Check if this is a tool use message
+                        is_tool_use = message_content.startswith('TOOL_USE_JSON:')
+                        
+                        if is_tool_use:
+                            try:
+                                tool_json = message_content[len('TOOL_USE_JSON:'):]
+                                tool_data = json.loads(tool_json)
+                                
+                                supabase.table('messages').insert({
+                                    'chat_id': chat_id,
+                                    'content': f"Using tool: {tool_data.get('description', 'Unknown')}",
+                                    'role': 'assistant',
+                                    'is_tool_use': True,
+                                    'metadata': {
+                                        'tool_data': tool_data,
+                                        'is_reflection': True
+                                    }
+                                }).execute()
+                            except json.JSONDecodeError:
+                                pass
+                        else:
+                            supabase.table('messages').insert({
+                                'chat_id': chat_id,
+                                'content': message_content,
+                                'role': 'assistant',
+                                'is_tool_use': False,
+                                'metadata': {
+                                    'is_reflection': True
+                                }
+                            }).execute()
+            
+            reflection_process.wait()
+            print("Reflection review completed")
+            
+            # Capture the final diff after reflection
+            print("Capturing final diff after reflection...")
+            final_diff_process = sandbox.exec("git", "-C", "/tmp/repo", "diff", "--staged")
+            final_diff_process.wait()
+            final_diff_output = final_diff_process.stdout.read()
+            
+            # Send the final diff if it changed
+            if final_diff_output != diff_output:
+                print("Diff changed after reflection, sending updated diff...")
+                max_diff_length = 10000
+                if len(final_diff_output) > max_diff_length:
+                    final_diff_output = final_diff_output[:max_diff_length] + "\n\n... (diff truncated)"
+                
+                supabase.table('messages').insert({
+                    'chat_id': chat_id,
+                    'content': f"📝 **Final changes after review:**\n\n```diff\n{final_diff_output}\n```",
+                    'role': 'assistant',
+                    'is_tool_use': False,
+                    'metadata': {
+                        'is_diff': True,
+                        'is_final': True
                     }
                 }).execute()
             
