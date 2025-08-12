@@ -19,6 +19,7 @@ export interface Message {
   chat_id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  is_tool_use: boolean;
   metadata: Record<string, any>;
   created_at: string;
 }

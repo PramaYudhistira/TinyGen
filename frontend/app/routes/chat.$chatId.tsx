@@ -39,6 +39,7 @@ export default function ChatPage({ params }: Route.ComponentProps) {
         chat_id: chatId,
         content: location.state.initialMessage,
         role: 'user' as const,
+        is_tool_use: false,
         created_at: new Date().toISOString(),
         metadata: {}
       };
@@ -69,14 +70,24 @@ export default function ChatPage({ params }: Route.ComponentProps) {
   useEffect(() => {
     if (!chatId || !user) return;
 
-    // Cleanup previous subscription
+    // Don't create a new subscription if we already have one for this chat
     if (channelRef.current) {
+      const currentChannelName = channelRef.current.topic;
+      if (currentChannelName === `messages_${chatId}`) {
+        console.log('Already subscribed to this chat, skipping');
+        return;
+      }
+      // Different chat, cleanup old subscription
+      console.log('Cleaning up previous subscription');
       supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
     }
 
+    console.log(`Creating realtime subscription for chat ${chatId}`);
+    
     // Create new subscription
     const channel = supabase
-      .channel(`messages:${chatId}`)
+      .channel(`messages_${chatId}`)
       .on(
         'postgres_changes',
         { 
@@ -86,30 +97,41 @@ export default function ChatPage({ params }: Route.ComponentProps) {
           filter: `chat_id=eq.${chatId}`
         },
         (payload) => {
+          console.log('Realtime message received:', payload);
           const newMessage = payload.new as Message;
           // Only add if it's not from the current user (to avoid duplicates)
           if (newMessage.role === 'assistant') {
             setMessages(prev => {
               // Check if message already exists to avoid duplicates
               const exists = prev.some(msg => msg.id === newMessage.id);
-              if (exists) return prev;
+              if (exists) {
+                console.log('Message already exists, skipping:', newMessage.id);
+                return prev;
+              }
+              console.log('Adding new message:', newMessage);
               return [...prev, newMessage];
             });
           }
         }
       )
-      .subscribe();
+      .subscribe((status, error) => {
+        console.log('Realtime subscription status:', status);
+        if (error) {
+          console.error('Realtime subscription error:', error);
+        }
+      });
 
     channelRef.current = channel;
 
-    // Cleanup on unmount
+    // Cleanup only on unmount or when chatId changes
     return () => {
       if (channelRef.current) {
+        console.log('Cleaning up subscription');
         supabase.removeChannel(channelRef.current);
         channelRef.current = null;
       }
     };
-  }, [chatId, user]);
+  }, [chatId]); // Remove user from dependencies to prevent reconnections
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -245,6 +267,7 @@ export default function ChatPage({ params }: Route.ComponentProps) {
           chat_id: chatId,
           content: message,
           role: 'user',
+          is_tool_use: false,
           metadata: {},
         })
         .select()
@@ -299,31 +322,32 @@ export default function ChatPage({ params }: Route.ComponentProps) {
                 <div className="space-y-4 p-4">
                   {messages.map((msg) => {
                     // Check if this is a tool use message
-                    const isToolUse = msg.content.startsWith('TOOL_USE_JSON:');
-                    let toolData = null;
-                    
-                    if (isToolUse) {
-                      try {
-                        toolData = JSON.parse(msg.content.substring('TOOL_USE_JSON:'.length));
-                      } catch (e) {
-                        console.error('Failed to parse tool use data:', e);
-                      }
-                    }
+                    const isToolUse = msg.is_tool_use === true;
+                    const toolData = isToolUse ? msg.metadata?.tool_data : null;
                     
                     return (
                       <div
                         key={msg.id}
                         className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                       >
-                        {toolData ? (
+                        {isToolUse && toolData ? (
                           // Tool use rendering
                           <div className="max-w-[80%] px-4 py-3 rounded-2xl bg-blue-500/10 border border-blue-500/20">
                             <div className="flex items-center gap-2 mb-1">
-                              <span className="text-lg">{toolData.icon}</span>
-                              <span className="text-blue-300 font-medium">{toolData.description}</span>
+                              <span className="text-lg">{toolData.icon || '🔧'}</span>
+                              <span className="text-blue-300 font-medium">{toolData.description || msg.content}</span>
                             </div>
                             {toolData.summary && (
                               <p className="text-white/70 text-sm">{toolData.summary}</p>
+                            )}
+                            {toolData.input && Object.keys(toolData.input).length > 0 && (
+                              <div className="mt-2 text-xs text-white/50">
+                                {Object.entries(toolData.input).map(([key, value]) => (
+                                  <div key={key}>
+                                    <span className="text-white/70">{key}:</span> {String(value)}
+                                  </div>
+                                ))}
+                              </div>
                             )}
                           </div>
                         ) : (

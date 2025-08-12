@@ -362,7 +362,7 @@ def fork_and_clone_repo(repo_url: str, user_github_username: str, chat_id: str) 
     secrets=[Secret.from_name("all-tinygen")],
     timeout=1800  # 30 minutes timeout for running Claude
 )
-async def run_claude_agent(repo_url: str, user_github_username: str, chat_id: str, prompt: str) -> Dict:
+def run_claude_agent(repo_url: str, user_github_username: str, chat_id: str, prompt: str) -> Dict:
     """
     Fork a repo (if needed), clone it, run Claude Code SDK with the prompt,
     stream output to Supabase Realtime, create a PR, and save the snapshot.
@@ -376,7 +376,6 @@ async def run_claude_agent(repo_url: str, user_github_username: str, chat_id: st
         check_repo_access
     )
     from supabase import create_client
-    import asyncio
     import json
     import tempfile
     from prompts import INITIAL_SYSTEM_PROMPT
@@ -386,6 +385,15 @@ async def run_claude_agent(repo_url: str, user_github_username: str, chat_id: st
     supabase_url = os.environ["SUPABASE_URL"]
     supabase_key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     supabase = create_client(supabase_url, supabase_key)
+    
+    # Test Supabase connection
+    try:
+        test_result = supabase.table('messages').select('id').limit(1).execute()
+        print(f"Supabase connection test successful. URL: {supabase_url}")
+    except Exception as e:
+        print(f"ERROR: Failed to connect to Supabase: {str(e)}")
+        print(f"URL: {supabase_url}")
+        return {"status": "error", "error": f"Supabase connection failed: {str(e)}"}
     
     # Get GitHub App credentials
     client_id = os.environ["GITHUB_CLIENT_ID"]
@@ -570,8 +578,6 @@ def format_message_for_display(message):
     return []
 
 async def main():
-    print("Starting claude-code assistant...", flush=True)
-    
     try:
         options = ClaudeCodeOptions(
             model="claude-sonnet-4-20250514",
@@ -582,29 +588,18 @@ async def main():
             allowed_tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"]
         )
         
-        # First check what directory we're in
-        import os
-        print(f"Current directory before query: {{os.getcwd()}}", flush=True)
-        
         # Query with the provided prompt
-        message_count = 0
         async for message in query(prompt="{prompt}", options=options):
-            message_count += 1
-            print(f"Received message {{message_count}}: {{type(message)}}", flush=True)
-            
-            # Format and print messages
+            # Format and print ONLY the actual messages
             display_messages = format_message_for_display(message)
-            print(f"Formatted into {{len(display_messages)}} display messages", flush=True)
             
             for msg in display_messages:
                 print("CHAT_MESSAGE:" + CHAT_ID + ":" + msg, flush=True)
-        
-        print(f"✅ Task completed! Total messages: {{message_count}}", flush=True)
+                sys.stdout.flush()  # Force flush to ensure parent process sees it
         
     except Exception as e:
-        print(f"ERROR in main: {{str(e)}}", flush=True)
-        import traceback
-        print(f"Traceback: {{traceback.format_exc()}}", flush=True)
+        # Don't print errors - they'll just pollute the output
+        pass
 
 asyncio.run(main())
 '''
@@ -658,30 +653,85 @@ asyncio.run(main())
         stderr_lines = []
         
         # Read stdout
+        print(f"Starting to read Claude output for chat {chat_id}...")
+        message_count = 0
         for line in claude_process.stdout:
             line = line.strip()
             output_lines.append(line)
-            if line.startswith("CHAT_MESSAGE:"):
+            
+            # ONLY process lines that start with CHAT_MESSAGE: - everything else is debug crap
+            if line.startswith("CHAT_MESSAGE:") and ":" in line[13:]:
                 # Parse the message format CHAT_MESSAGE:chat_id:content
                 parts = line.split(":", 2)
                 if len(parts) >= 3:
                     message_content = parts[2]
+                    message_count += 1
+                    print(f"Processing message #{message_count} for chat {chat_id}")
                     
-                    # Insert message into messages table for realtime broadcast
-                    # This assumes you have a messages table that broadcasts changes
-                    supabase.table('messages').insert({
-                        'chat_id': chat_id,
-                        'content': message_content,
-                        'role': 'assistant',
-                        'created_at': 'now()'
-                    }).execute()
-            else:
-                # Log output but don't send to frontend
-                print(f"[Claude Output] {line}")
+                    # Check if this is a tool use message
+                    is_tool_use = message_content.startswith('TOOL_USE_JSON:')
+                    
+                    if is_tool_use:
+                        # Parse the tool use data
+                        try:
+                            tool_json = message_content[len('TOOL_USE_JSON:'):]
+                            tool_data = json.loads(tool_json)
+                            
+                            # Insert as a structured tool use message
+                            try:
+                                result = supabase.table('messages').insert({
+                                    'chat_id': chat_id,
+                                    'content': f"Using tool: {tool_data.get('description', 'Unknown')}",
+                                    'role': 'assistant',
+                                    'is_tool_use': True,
+                                    'metadata': {
+                                        'tool_data': tool_data
+                                    }
+                                }).execute()
+                                if result.data:
+                                    print(f"Successfully inserted tool use message: {result.data[0]['id']}")
+                                else:
+                                    print(f"Warning: Insert returned no data")
+                            except Exception as e:
+                                print(f"ERROR inserting tool use message: {str(e)}")
+                                print(f"Chat ID: {chat_id}")
+                                print(f"Tool data: {tool_data}")
+                        except json.JSONDecodeError:
+                            print(f"Failed to parse tool use JSON: {message_content}")
+                            # Fall back to regular message
+                            result = supabase.table('messages').insert({
+                                'chat_id': chat_id,
+                                'content': message_content,
+                                'role': 'assistant',
+                                'is_tool_use': False,
+                                'metadata': {}
+                            }).execute()
+                            print(f"Inserted fallback message: {result.data}")
+                    else:
+                        # Regular text message
+                        try:
+                            result = supabase.table('messages').insert({
+                                'chat_id': chat_id,
+                                'content': message_content,
+                                'role': 'assistant',
+                                'is_tool_use': False,
+                                'metadata': {}
+                            }).execute()
+                            if result.data:
+                                print(f"Successfully inserted regular message: {result.data[0]['id']}")
+                                print(f"Message preview: {message_content[:100]}...")
+                            else:
+                                print(f"Warning: Insert returned no data for regular message")
+                        except Exception as e:
+                            print(f"ERROR inserting regular message: {str(e)}")
+                            print(f"Chat ID: {chat_id}")
+                            print(f"Message content: {message_content[:200]}...")
+            # Ignore all non-CHAT_MESSAGE lines
         
         # Wait for process to complete
         exit_code = claude_process.wait()
         print(f"Claude process exited with code: {exit_code}")
+        print(f"Total messages processed: {message_count}")
         
         # Read any stderr
         for line in claude_process.stderr:
@@ -717,7 +767,8 @@ asyncio.run(main())
                 'chat_id': chat_id,
                 'content': "I've analyzed your request but didn't need to make any changes to the repository.",
                 'role': 'assistant',
-                'created_at': 'now()'
+                'is_tool_use': False,
+                'metadata': {}
             }).execute()
             
             # Set pr_url to None when no changes
@@ -750,7 +801,8 @@ asyncio.run(main())
                         'chat_id': chat_id,
                         'content': "I've analyzed your request but no changes were needed.",
                         'role': 'assistant',
-                        'created_at': 'now()'
+                        'is_tool_use': False,
+                        'metadata': {}
                     }).execute()
                     return {
                         "status": "success",
