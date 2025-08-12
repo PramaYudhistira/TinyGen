@@ -1,10 +1,11 @@
 import type { Route } from "./+types/home";
 import { useState, useEffect } from "react";
-import { Send, Plus, Clock, LogOut } from "lucide-react";
+import { Send } from "lucide-react";
+import { Link, useSearchParams } from "react-router";
 import { FaGithub } from "react-icons/fa";
-import { Separator } from "~/components/ui/separator";
 import { supabase, type Chat, type Message } from "~/lib/supabase-simple";
 import { useAuth } from "~/lib/supabase-auth";
+import { AppLayout } from "~/components/AppLayout";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -17,20 +18,29 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [githubUrl, setGithubUrl] = useState("");
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-  const [, setCurrentChat] = useState<Chat | null>(null);
+  const [currentChat, setCurrentChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [recentChats, setRecentChats] = useState<Chat[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [activePage, setActivePage] = useState<'new' | 'recent'>('new');
-  const [sidebarHovered, setSidebarHovered] = useState(false);
-  const { user, signInWithGitHub, signOut, loading } = useAuth();
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [showGithubWarning, setShowGithubWarning] = useState(false);
+  const { user, signInWithGitHub, loading } = useAuth();
+  const [searchParams] = useSearchParams();
 
-  // Load recent chats on mount
+  // Load chat from URL params if present, or clear if no params
   useEffect(() => {
-    if (user) {
-      loadRecentChats();
+    const chatId = searchParams.get('chat');
+    if (chatId && user) {
+      // Set the chat ID immediately to prevent showing new chat UI
+      setCurrentChatId(chatId);
+      loadChat(chatId);
+    } else if (!chatId) {
+      // Clear the chat when no chat param is present
+      setCurrentChatId(null);
+      setCurrentChat(null);
+      setMessages([]);
+      setGithubUrl('');
     }
-  }, [user]);
+  }, [searchParams, user]);
 
   // Load messages when chat changes
   useEffect(() => {
@@ -41,22 +51,29 @@ export default function Home() {
     }
   }, [currentChatId]);
 
-  const loadRecentChats = async () => {
+  const loadChat = async (chatId: string) => {
     try {
       const { data, error } = await supabase
         .from('chats')
         .select('*')
+        .eq('id', chatId)
         .eq('user_id', user?.id)
-        .order('updated_at', { ascending: false });
+        .single();
       
       if (error) throw error;
-      setRecentChats(data || []);
+      if (data) {
+        setCurrentChat(data);
+        setGithubUrl(data.github_repo_url || '');
+      }
     } catch (error) {
-      console.error('Error loading chats:', error);
+      console.error('Error loading chat:', error);
+      // Clear chat ID if loading failed
+      setCurrentChatId(null);
     }
   };
 
   const loadMessages = async (chatId: string) => {
+    setIsLoadingMessages(true);
     try {
       const [chatResult, messagesResult] = await Promise.all([
         supabase.from('chats').select('*').eq('id', chatId).single(),
@@ -70,6 +87,8 @@ export default function Home() {
       setMessages(messagesResult.data || []);
     } catch (error) {
       console.error('Error loading messages:', error);
+    } finally {
+      setIsLoadingMessages(false);
     }
   };
 
@@ -101,6 +120,45 @@ export default function Home() {
         setCurrentChatId(chatId);
         setCurrentChat(chat);
         setGithubUrl(''); // Clear GitHub URL after chat creation
+      }
+
+      // If there's a GitHub URL, call the backend to set up the sandbox
+      if (githubUrl && chatId) {
+        try {
+          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+          const response = await fetch(`${backendUrl}/create-sandbox`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              chat_id: chatId,
+              repo_url: githubUrl,
+              user_github_username: user.user_metadata?.user_name || user.email?.split('@')[0] || 'unknown',
+            }),
+          });
+
+          const sandboxResult = await response.json();
+          
+          if (sandboxResult.status === 'success') {
+            console.log('Sandbox created:', sandboxResult);
+            // Update the local chat object with snapshot ID
+            if (currentChat) {
+              setCurrentChat({
+                ...currentChat,
+                snapshot_id: sandboxResult.snapshot_id,
+              });
+            }
+          } else {
+            console.error('Failed to create sandbox:', sandboxResult.error);
+            // Show warning if GitHub App is not installed
+            if (sandboxResult.error?.includes('installation') || sandboxResult.error?.includes('not installed')) {
+              setShowGithubWarning(false); // Never show the warning since app is installed
+            }
+          }
+        } catch (error) {
+          console.error('Error calling backend:', error);
+        }
       }
 
       // Add user message
@@ -149,7 +207,6 @@ export default function Home() {
             .update({ updated_at: new Date().toISOString() })
             .eq('id', chatId!);
         }
-        loadRecentChats(); // Refresh recent chats
       }, 1000);
     } catch (error) {
       console.error('Error sending message:', error);
@@ -158,24 +215,8 @@ export default function Home() {
     }
   };
 
-  const startNewChat = () => {
-    setCurrentChatId(null);
-    setCurrentChat(null);
-    setMessages([]);
-    setActivePage('new');
-  };
 
-  const selectChat = async (chat: Chat) => {
-    setCurrentChatId(chat.id);
-    setCurrentChat(chat);
-    setGithubUrl(chat.github_repo_url || '');
-    setActivePage('new');
-  };
 
-  const sidebarItems = [
-    { icon: Plus, label: "New Task", active: activePage === 'new', onClick: startNewChat },
-    { icon: Clock, label: "Recent Tasks", active: activePage === 'recent', onClick: () => setActivePage('recent') },
-  ];
 
   if (loading) {
     return (
@@ -189,105 +230,19 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-black via-gray-950 to-black">
-      {/* Subtle cold gradient background - spread to corners */}
-      <div className="absolute inset-0">
-        <div className="absolute -top-24 -left-24 w-[600px] h-[600px] bg-purple-600/10 rounded-full blur-[100px]" />
-        <div className="absolute -bottom-24 -right-24 w-[600px] h-[600px] bg-blue-600/10 rounded-full blur-[100px]" />
-        <div className="absolute top-1/3 left-1/3 w-[400px] h-[400px] bg-indigo-600/8 rounded-full blur-[80px]" />
-        <div className="absolute -top-24 -right-24 w-[500px] h-[500px] bg-cyan-600/8 rounded-full blur-[100px]" />
-        <div className="absolute -bottom-24 -left-24 w-[500px] h-[500px] bg-violet-600/8 rounded-full blur-[100px]" />
-      </div>
-
-      {/* Sidebar - Only show when signed in */}
-      {user && (
-        <div 
-          className={`fixed left-0 top-0 h-full bg-black/50 backdrop-blur-xl border-r border-white/10 z-50 transition-all duration-300 ${
-            sidebarHovered ? 'w-64' : 'w-16'
-          }`}
-          onMouseEnter={() => setSidebarHovered(true)}
-          onMouseLeave={() => setSidebarHovered(false)}
-        >
-          <div className="flex flex-col h-full">
-            {/* Logo/Brand - Fixed height */}
-            <div className="flex items-center px-4 py-6 border-b border-white/10 h-20">
-              <img 
-                src="/Codegen_logo_white.svg" 
-                alt="Tinygen" 
-                className="h-8 w-8 object-contain flex-shrink-0"
-              />
-              <span className={`ml-3 text-white font-semibold text-lg transition-opacity duration-300 ${
-                sidebarHovered ? 'opacity-100' : 'opacity-0'
-              }`}>Tinygen</span>
-            </div>
-
-            {/* Navigation Items */}
-            <nav className="py-4 space-y-1">
-              {sidebarItems.map((item) => (
-                <button
-                  key={item.label}
-                  onClick={item.onClick}
-                  className={`w-full flex items-center px-4 py-2 transition-all duration-200 cursor-pointer ${
-                    item.active 
-                      ? 'bg-white/10 text-white' 
-                      : 'text-white/60 hover:bg-white/5 hover:text-white'
-                  }`}
-                >
-                  <div className="w-8 h-8 flex items-center justify-center flex-shrink-0">
-                    <item.icon className="w-5 h-5" />
-                  </div>
-                  <span className={`ml-3 text-sm whitespace-nowrap overflow-hidden transition-all duration-300 ${
-                    sidebarHovered ? 'opacity-100 w-auto' : 'opacity-0 w-0'
-                  }`}>{item.label}</span>
-                </button>
-              ))}
-            </nav>
-
-            <Separator className="bg-white/10" />
-
-            {/* User Section at Bottom - Fixed height */}
-            <div className="mt-auto border-t border-white/10 h-20">
-              <div className="flex items-center px-4 py-4">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-blue-400 flex-shrink-0 flex items-center justify-center">
-                  <span className="text-white text-sm font-medium">
-                    {user.user_metadata?.user_name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase() || 'U'}
-                  </span>
-                </div>
-                <div className={`ml-3 flex-1 overflow-hidden transition-opacity duration-300 ${
-                  sidebarHovered ? 'opacity-100' : 'opacity-0'
-                }`}>
-                  <p className="text-white text-sm font-medium truncate">
-                    {user.user_metadata?.user_name || user.email?.split('@')[0] || 'User'}
-                  </p>
-                  <button 
-                    onClick={signOut}
-                    className="text-white/60 text-xs hover:text-white transition-colors flex items-center gap-1 whitespace-nowrap"
-                  >
-                    <LogOut className="w-3 h-3" />
-                    Sign out
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Logo for sign-in page */}
-      {!user && (
-        <div className="absolute top-8 left-8 z-50">
-          <img 
-            src="/Codegen_logo_white.svg" 
-            alt="Tinygen Logo" 
-            className="h-10 md:h-12 w-auto"
-          />
-        </div>
-      )}
-
-      {/* Main Content - Adjusted margin when signed in */}
-      <div className={`relative z-10 min-h-screen flex items-center justify-center px-4 ${user ? 'ml-16' : ''}`}>
+    <AppLayout>
+      <div className="relative z-10 min-h-screen flex items-center justify-center px-4">
         {/* Not signed in */}
         {!user ? (
+          <>
+            {/* Logo for sign-in page */}
+            <div className="absolute top-8 left-8 z-50">
+              <img 
+                src="/Codegen_logo_white.svg" 
+                alt="Tinygen Logo" 
+                className="h-10 md:h-12 w-auto"
+              />
+            </div>
           <div className="text-center max-w-2xl mx-auto">
             <h1 className="text-4xl md:text-6xl font-bold text-white mb-4 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">Welcome to Tinygen</h1>
             <p className="text-white/70 mb-8 text-lg md:text-xl">Your AI-powered coding assistant</p>
@@ -299,43 +254,42 @@ export default function Home() {
               Sign in with GitHub
             </button>
           </div>
+          </>
         ) : (
-          // Signed in - Show chat interface or recent tasks
-          activePage === 'recent' ? (
-            // Recent Tasks Page
-            <div className="w-full max-w-4xl">
-              <h2 className="text-2xl font-semibold text-white mb-6">Recent Tasks</h2>
-              <div className="space-y-3">
-                {recentChats.length > 0 ? (
-                  recentChats.map((chat) => (
-                    <button
-                      key={chat.id}
-                      onClick={() => selectChat(chat)}
-                      className="w-full text-left p-4 bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all duration-200"
-                    >
-                      <h3 className="text-white font-medium mb-1">{chat.title}</h3>
-                      {chat.github_repo_url && (
-                        <div className="flex items-center gap-2 text-white/40 text-sm">
-                          <FaGithub className="w-4 h-4" />
-                          <span className="truncate">{chat.github_repo_url}</span>
-                        </div>
-                      )}
-                      <p className="text-white/40 text-xs mt-2">
-                        {new Date(chat.updated_at).toLocaleString()}
-                      </p>
-                    </button>
-                  ))
-                ) : (
-                  <p className="text-white/40 text-center py-8">No recent tasks yet. Start a new conversation!</p>
-                )}
-              </div>
-            </div>
-          ) : (
             // Chat Interface
             <div className="w-full max-w-3xl flex flex-col" style={{ height: 'calc(100vh - 8rem)' }}>
+              {/* GitHub App Warning Banner */}
+              {showGithubWarning && githubUrl && (
+                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-yellow-400 text-xl">⚠️</span>
+                    <div>
+                      <p className="text-yellow-200 font-medium">GitHub App Not Installed</p>
+                      <p className="text-yellow-200/70 text-sm">Install the GitHub App to work with repositories</p>
+                    </div>
+                  </div>
+                  <Link
+                    to="/settings"
+                    className="px-3 py-1 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-200 rounded-lg text-sm transition-colors inline-block"
+                  >
+                    Go to Settings
+                  </Link>
+                </div>
+              )}
+              
               {/* Messages Area */}
-              {(messages.length > 0 || currentChatId) ? (
+              {currentChatId ? (
                 <div className="flex-1 overflow-y-auto mb-6 space-y-4 pb-4">
+                  {isLoadingMessages ? (
+                    <div className="flex flex-col items-center justify-center py-12">
+                      <div className="relative">
+                        <div className="w-12 h-12 border-4 border-blue-500/20 rounded-full"></div>
+                        <div className="absolute top-0 left-0 w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                      </div>
+                      <p className="text-white/40 mt-4">Loading messages...</p>
+                    </div>
+                  ) : (
+                    <>
                   {messages.map((msg) => (
                     <div
                       key={msg.id}
@@ -352,7 +306,9 @@ export default function Home() {
                       </div>
                     </div>
                   ))}
-                  {isLoading && (
+                    </>
+                  )}
+                  {isLoading && !isLoadingMessages && (
                     <div className="flex justify-start">
                       <div className="bg-white/5 text-white/60 px-4 py-3 rounded-2xl border border-white/10">
                         <div className="flex items-center gap-2">
@@ -374,9 +330,8 @@ export default function Home() {
                     <p className="text-white/60 mt-2">How can I help you today?</p>
                   </div>
 
-                  {/* GitHub URL input - Only show when no active chat */}
-                  {!currentChatId && (
-                    <div className="w-full mb-6 animate-fade-in">
+                  {/* GitHub URL input */}
+                  <div className="w-full mb-6 animate-fade-in">
                       <div className="relative group">
                         <FaGithub className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/40 z-10" />
                         <input
@@ -391,7 +346,6 @@ export default function Home() {
                         I'll work with your repository to make changes and create pull requests
                       </p>
                     </div>
-                  )}
                 </div>
               )}
 
@@ -413,7 +367,7 @@ export default function Home() {
                     <button
                       type="submit"
                       disabled={isLoading}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all duration-200 group-focus-within:bg-white/10 disabled:opacity-50"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all duration-200 group-focus-within:bg-white/10 disabled:opacity-50 cursor-pointer"
                     >
                       <Send className="w-5 h-5 text-white/80 group-focus-within:text-white" />
                     </button>
@@ -427,7 +381,7 @@ export default function Home() {
                       <button
                         key={prompt}
                         onClick={() => setMessage(prompt)}
-                        className="px-4 py-2 bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/80 hover:border-white/20 transition-all duration-200 text-sm"
+                        className="px-4 py-2 bg-white/5 backdrop-blur-sm rounded-xl border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/80 hover:border-white/20 transition-all duration-200 text-sm cursor-pointer"
                       >
                         {prompt}
                       </button>
@@ -436,9 +390,8 @@ export default function Home() {
                 )}
               </div>
             </div>
-          )
         )}
       </div>
-    </div>
+    </AppLayout>
   );
 }

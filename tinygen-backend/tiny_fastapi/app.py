@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from .routers import agents
 
 
 
@@ -16,6 +17,8 @@ fastapi_client.add_middleware(
 )
 
 
-@fastapi_client.get("/")
-def read_root():
-    return {"message": "Hello, World!"}
+fastapi_client.include_router(agents.router)
+
+# @fastapi_client.get("/")
+# def read_root():
+#     return {"message": "Hello, World!"}

@@ -9,6 +9,7 @@ export interface Chat {
   user_id: string;
   title: string;
   github_repo_url: string | null;
+  snapshot_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -20,6 +21,21 @@ export interface Message {
   content: string;
   metadata: Record<string, any>;
   created_at: string;
+}
+
+export interface AgentContext {
+  id: string;
+  chat_id: string;
+  user_id: string;
+  thread_id: string;
+  checkpoint_id: string | null;
+  state_data: Record<string, any>;
+  config: Record<string, any>;
+  tool_results: any[];
+  memory_data: Record<string, any>;
+  metadata: Record<string, any>;
+  created_at: string;
+  updated_at: string;
 }
 
 // Simple Supabase client - we'll use user_id directly for RLS
