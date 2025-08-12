@@ -464,7 +464,7 @@ def run_claude_agent(repo_url: str, user_github_username: str, chat_id: str, pro
             raise Exception(f"Failed to clone repo: {clone_process.stderr.read()}")
         
         # Create branch for changes
-        branch_name = f"claude-{chat_id[:8]}-{int(time.time())}"
+        branch_name = f"tinygen-{chat_id[:8]}-{int(time.time())}"
         sandbox.exec("git", "-C", "/tmp/repo", "checkout", "-b", branch_name).wait()
         
         # Initialize pr_url
@@ -776,11 +776,34 @@ asyncio.run(main())
         else:
             print(f"Changes detected:\n{status_output}")
             
-            # Add and commit changes
+            # Add all changes first
             print("Adding all changes...")
             add_process = sandbox.exec("git", "-C", "/tmp/repo", "add", "-A")
             add_process.wait()
             print(f"Git add exit code: {add_process.returncode}")
+            
+            # Capture the diff after staging
+            print("Capturing diff...")
+            diff_process = sandbox.exec("git", "-C", "/tmp/repo", "diff", "--staged")
+            diff_process.wait()
+            diff_output = diff_process.stdout.read()
+            
+            # Send a message with the diff
+            if diff_output:
+                # Truncate diff if it's too long
+                max_diff_length = 10000
+                if len(diff_output) > max_diff_length:
+                    diff_output = diff_output[:max_diff_length] + "\n\n... (diff truncated)"
+                
+                supabase.table('messages').insert({
+                    'chat_id': chat_id,
+                    'content': f"📝 **Changes to be committed:**\n\n```diff\n{diff_output}\n```",
+                    'role': 'assistant',
+                    'is_tool_use': False,
+                    'metadata': {
+                        'is_diff': True
+                    }
+                }).execute()
             
             print("Committing changes...")
             commit_message = f"Apply changes from Claude AI assistant\n\nPrompt: {prompt[:200]}...\n\nChat ID: {chat_id}"
@@ -829,8 +852,8 @@ asyncio.run(main())
         
             # Create PR only if we have changes
             print("Creating pull request...")
-            pr_title = f"Claude AI: {prompt[:60]}..."
-            pr_body = f"""This PR was created by Claude AI assistant.
+            pr_title = f"Tinygen AI: {prompt[:60]}..."
+            pr_body = f"""This PR was created by Tinygen AI assistant.
 
 **Prompt**: {prompt}
 
@@ -867,6 +890,19 @@ asyncio.run(main())
                     raise Exception(f"Failed to create PR: {pr_stderr}")
             
             print(f"PR URL: {pr_url}")
+            
+            # Send a message with the PR link
+            supabase.table('messages').insert({
+                'chat_id': chat_id,
+                'content': f"🎉 **Pull Request Created!**\n\n[View PR on GitHub]({pr_url})\n\nYour changes have been pushed to `{branch_name}` and a pull request has been created.",
+                'role': 'assistant',
+                'is_tool_use': False,
+                'metadata': {
+                    'is_pr_notification': True,
+                    'pr_url': pr_url,
+                    'branch_name': branch_name
+                }
+            }).execute()
         
         # Create final snapshot
         print("Creating final snapshot...")

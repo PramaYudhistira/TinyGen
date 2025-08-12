@@ -20,6 +20,7 @@ export default function ChatPage({ params }: Route.ComponentProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(true);
+  const [isSettingUpEnvironment, setIsSettingUpEnvironment] = useState(false);
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -47,6 +48,7 @@ export default function ChatPage({ params }: Route.ComponentProps) {
       
       // Call the endpoint immediately
       if (location.state.initialChat.github_repo_url) {
+        setIsSettingUpEnvironment(true);
         callClaudeAgent(location.state.initialChat, location.state.initialMessage);
         hasCalledEndpoint.current = true;
       }
@@ -197,7 +199,9 @@ export default function ChatPage({ params }: Route.ComponentProps) {
       if (result.status === 'started') {
         console.log('Claude agent started successfully');
         // The messages will come through realtime subscription
+        setIsSettingUpEnvironment(false);
       } else {
+        setIsSettingUpEnvironment(false);
         console.error('Failed to start Claude agent:', result.error);
         // Add error message
         const { data: errorMessage } = await supabase
@@ -217,6 +221,7 @@ export default function ChatPage({ params }: Route.ComponentProps) {
       }
     } catch (error) {
       console.error('Error calling Claude agent:', error);
+      setIsSettingUpEnvironment(false);
       // Add error message
       const { data: errorMessage } = await supabase
         .from('messages')
@@ -290,6 +295,7 @@ export default function ChatPage({ params }: Route.ComponentProps) {
         .eq('id', chatId);
 
       // Call Claude agent
+      setIsSettingUpEnvironment(true);
       await callClaudeAgent(currentChat, message);
     } catch (error) {
       console.error('Error sending message:', error);
@@ -325,6 +331,10 @@ export default function ChatPage({ params }: Route.ComponentProps) {
                     const isToolUse = msg.is_tool_use === true;
                     const toolData = isToolUse ? msg.metadata?.tool_data : null;
                     
+                    // Check for special message types
+                    const isDiff = msg.metadata?.is_diff === true;
+                    const isPrNotification = msg.metadata?.is_pr_notification === true;
+                    
                     return (
                       <div
                         key={msg.id}
@@ -350,6 +360,20 @@ export default function ChatPage({ params }: Route.ComponentProps) {
                               </div>
                             )}
                           </div>
+                        ) : isDiff ? (
+                          // Diff rendering with syntax highlighting
+                          <div className="max-w-[90%] px-4 py-3 rounded-2xl bg-gray-900/50 border border-gray-700/50">
+                            <div className="prose prose-invert max-w-none">
+                              <div dangerouslySetInnerHTML={{ __html: msg.content.replace(/```diff\n([\s\S]*?)```/g, '<pre class="bg-black/50 p-3 rounded-lg overflow-x-auto"><code class="text-sm">$1</code></pre>').replace(/^([\+].*)/gm, '<span class="text-green-400">$1</span>').replace(/^([\-].*)/gm, '<span class="text-red-400">$1</span>').replace(/^(@@ .* @@)/gm, '<span class="text-blue-400">$1</span>') }} />
+                            </div>
+                          </div>
+                        ) : isPrNotification ? (
+                          // PR notification with beautiful styling
+                          <div className="max-w-[80%] px-6 py-4 rounded-2xl bg-gradient-to-r from-green-500/10 to-blue-500/10 border border-green-500/20">
+                            <div className="prose prose-invert max-w-none">
+                              <div dangerouslySetInnerHTML={{ __html: msg.content.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:text-blue-300 underline">$1</a>').replace(/\*\*([^*]+)\*\*/g, '<strong class="text-white">$1</strong>').replace(/\n/g, '<br/>') }} />
+                            </div>
+                          </div>
                         ) : (
                           // Regular message rendering
                           <div
@@ -366,7 +390,24 @@ export default function ChatPage({ params }: Route.ComponentProps) {
                     );
                   })}
                   
-                  {isLoading && (
+                  {isSettingUpEnvironment && (
+                    <div className="flex justify-start">
+                      <div className="bg-gradient-to-r from-purple-500/10 to-blue-500/10 px-6 py-4 rounded-2xl border border-purple-500/20">
+                        <div className="flex items-center gap-3">
+                          <div className="relative">
+                            <div className="w-8 h-8 border-3 border-purple-500/20 rounded-full"></div>
+                            <div className="absolute top-0 left-0 w-8 h-8 border-3 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                          </div>
+                          <div>
+                            <p className="text-white font-medium">Setting up environment...</p>
+                            <p className="text-white/60 text-sm">Cloning repository and initializing AI agent</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {isLoading && !isSettingUpEnvironment && (
                     <div className="flex justify-start">
                       <div className="bg-white/5 text-white/60 px-4 py-3 rounded-2xl border border-white/10">
                         <div className="flex items-center gap-2">
