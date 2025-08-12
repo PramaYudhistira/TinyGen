@@ -14,6 +14,7 @@ export function meta() {
 export default function Settings() {
   const { user, loading } = useAuth();
   const [appInstalled, setAppInstalled] = useState(false);
+  const [checkingInstallation, setCheckingInstallation] = useState(true);
   const [searchParams] = useSearchParams();
   
   useEffect(() => {
@@ -26,15 +27,62 @@ export default function Settings() {
       localStorage.setItem('github_app_installed', 'true');
       localStorage.setItem('github_installation_id', installationId);
       setAppInstalled(true);
+      setCheckingInstallation(false);
       
       // Clean up the URL to remove the parameters
       window.history.replaceState({}, '', '/settings');
     } else {
-      // Check localStorage to see if previously installed
-      const installed = localStorage.getItem('github_app_installed') === 'true';
-      setAppInstalled(installed);
+      // Check with our backend if the app is installed
+      checkGitHubAppInstallation();
     }
   }, [searchParams]);
+  
+  const checkGitHubAppInstallation = async () => {
+    if (!user?.user_metadata?.user_name) {
+      console.log('No GitHub username found');
+      setCheckingInstallation(false);
+      return;
+    }
+    
+    try {
+      // Call our backend to check if the app is installed
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+      const response = await fetch(
+        `${backendUrl}/check-github-app/${user.user_metadata.user_name}`,
+        {
+          headers: {
+            'Accept': 'application/json',
+          }
+        }
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('GitHub App installation check:', data);
+        
+        setAppInstalled(data.installed);
+        
+        // Save to localStorage for faster subsequent checks
+        if (data.installed) {
+          localStorage.setItem('github_app_installed', 'true');
+          if (data.installation_id) {
+            localStorage.setItem('github_installation_id', data.installation_id.toString());
+          }
+        } else {
+          localStorage.removeItem('github_app_installed');
+          localStorage.removeItem('github_installation_id');
+        }
+      } else {
+        console.error('Backend API response:', response.status, response.statusText);
+        setAppInstalled(false);
+      }
+    } catch (error) {
+      console.error('Error checking GitHub App installation:', error);
+      setAppInstalled(false);
+    } finally {
+      setCheckingInstallation(false);
+    }
+  };
 
   // Show loading while auth is being checked
   if (loading) {
@@ -100,27 +148,21 @@ export default function Settings() {
           )}
 
           <div className="flex gap-4">
-            {!appInstalled ? (
-              <div className="flex gap-4">
-                <a
-                  href="https://github.com/apps/tinygen-ai/installations/new"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-white text-black rounded-xl hover:bg-gray-100 transition-all transform hover:scale-105 font-medium"
-                >
-                  <FaGithub className="w-5 h-5" />
-                  Install GitHub App
-                </a>
-                <button
-                  onClick={() => {
-                    localStorage.setItem('github_app_installed', 'true');
-                    setAppInstalled(true);
-                  }}
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-white/10 text-white border border-white/20 rounded-xl hover:bg-white/20 transition-all font-medium"
-                >
-                  Mark as Installed
-                </button>
+            {checkingInstallation ? (
+              <div className="inline-flex items-center gap-2 px-6 py-3 text-white/60">
+                <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                Checking installation...
               </div>
+            ) : !appInstalled ? (
+              <a
+                href="https://github.com/apps/tinygen-ai/installations/new"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-6 py-3 bg-white text-black rounded-xl hover:bg-gray-100 transition-all transform hover:scale-105 font-medium"
+              >
+                <FaGithub className="w-5 h-5" />
+                Install GitHub App
+              </a>
             ) : (
               <div className="inline-flex items-center gap-2 px-6 py-3 bg-green-500/20 text-green-400 border border-green-500/30 rounded-xl font-medium">
                 <span className="text-xl">✓</span>

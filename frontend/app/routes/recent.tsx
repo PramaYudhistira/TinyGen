@@ -43,8 +43,8 @@ export default function RecentTasks() {
   };
 
   const selectChat = (chat: Chat) => {
-    // Navigate to home with the chat ID as a query parameter
-    navigate(`/?chat=${chat.id}`);
+    // Navigate to the chat route
+    navigate(`/chat/${chat.id}`);
   };
 
   return (
